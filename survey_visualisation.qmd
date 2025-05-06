@@ -1,0 +1,125 @@
+---
+title: "Survey visualisation"
+format: 
+  html:
+    embed-resources: true
+---
+
+## Loading packages
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(googledrive)
+library(readxl)
+library(DT)
+library(digest)
+
+```
+
+
+## Data import
+
+The file is stored as .xlsx, so we can't use `read_sheet`. We need the workaround. 
+
+```{r}
+# authenticate
+drive_auth()
+```
+
+Download the file to the project directory and read it into memory. 
+
+```{r}
+# get file id to download xlsx file
+survey_output_file <- drive_get("20250428_FIDELISlandscapesurvey_dataforanalysis.xlsx")
+
+# create a timestamp, so we create a new version of the file each time we download
+timestamp <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")  # Format: YYYY-MM-DD_HH-MM-SS
+survey_download_file <- paste0("survey_results/survey_results_", timestamp, ".xlsx")
+
+dir.create("survey_results", showWarnings = FALSE)
+
+# download the excel file
+drive_download(survey_output_file,
+               path = survey_download_file,
+               overwrite = TRUE)
+
+# import the results 
+survey_results <- read_excel(survey_download_file, sheet = "Sheet1")
+
+# create question IDs based on survey results column names
+qid <-  sapply(colnames(survey_results), digest) |> substr(1, 8)
+colnames(survey_results) <- qid
+
+# import question metadata
+question_metadata <- read_excel(survey_download_file,
+                                sheet = "question_metadata") |>
+  mutate(qid = qid)
+
+```
+
+## Data cleaning and re-formatting
+
+Create a column with a character value specifying which pillar(s) are interested by question group. 
+
+```{r}
+group_interest <- question_metadata |>
+  group_by(group) |>
+  summarise(across(starts_with("interest_"), ~ any(.)))
+
+int_vec <- group_interest |>
+  select(starts_with("interest")) |>
+  apply(1, function(x) {
+  intrst <- c("general", "pillar2", "pillar3", "pillar4", "pillar5")[which(x)]
+  if(length(intrst) == 0) intrst <- "none"
+  return(paste(intrst, collapse = ";"))
+  })
+
+group_interest <- mutate(group_interest, interest = int_vec) |>
+  select(group, interest)
+
+question_metadata <- left_join(question_metadata, group_interest)
+```
+
+
+Check whether each group has only one type
+
+```{r}
+group_by_type <- question_metadata |>
+  select(group, group_type) |>
+  distinct()
+
+group_by_type |>
+  group_by(group_type) |>
+  summarise(number_of_groups_by_type = n())
+```
+
+```{r}
+
+```
+
+Get an overview of question responses - colored by question type and pillar interest. 
+
+```{r}
+answers_by_question <- survey_results |>
+  summarise(across(everything(), ~ sum(!is.na(.)))) |>
+  pivot_longer(everything(),
+               names_to = "qid",
+               values_to = "respondents_answered") |>
+  left_join(select(question_metadata, qid, interest, question_type))
+
+answers_by_question |>
+  mutate(qid = factor(qid, levels = rev(qid))) |>
+  ggplot(aes(y = qid, x = respondents_answered, fill = interest)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_classic()
+
+answers_by_question |>
+  mutate(qid = factor(qid, levels = rev(qid))) |>
+  ggplot(aes(y = qid, x = respondents_answered, fill = question_type)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_classic()
+```
+
