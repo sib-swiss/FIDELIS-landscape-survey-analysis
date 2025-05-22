@@ -3,9 +3,15 @@ title: "Survey visualisation"
 format: 
   html:
     embed-resources: true
+    code-fold: true
+execute:
+  warning: false
+
 ---
 
-## Loading packages
+## Loading packages and functions
+
+Note: some plotting functions are based on the code from Laurence Horton.
 
 ```{r}
 library(ggplot2)
@@ -14,7 +20,11 @@ library(googledrive)
 library(readxl)
 library(DT)
 library(digest)
+library(cluster)    
+library(ComplexHeatmap)
+library(igraph)
 
+source("plotting_functions.R")
 ```
 
 
@@ -27,7 +37,7 @@ The file is stored as .xlsx, so we can't use `read_sheet`. We need the workaroun
 drive_auth()
 ```
 
-Download the file to the project directory and read it into memory. 
+Download the file to the project directory and read it into memory. As the file is open for editing, we store each downlaoded file locally, so we can traceback (breaking) changes. 
 
 ```{r}
 # get file id to download xlsx file
@@ -60,7 +70,7 @@ question_metadata <- read_excel(survey_download_file,
 
 ## Data cleaning and re-formatting
 
-Create a column with a character value specifying which pillar(s) are interested by question group. 
+Create a column with a character value specifying which pillar(s) are interested in which group of questions. 
 
 ```{r}
 group_interest <- question_metadata |>
@@ -82,25 +92,82 @@ question_metadata <- left_join(question_metadata, group_interest)
 ```
 
 
-Check whether each group has only one type
+<!-- Check whether each group has only one type -->
+
+<!-- ```{r} -->
+<!-- group_by_type <- question_metadata |> -->
+<!--   select(group, group_type) |> -->
+<!--   distinct() -->
+
+<!-- group_by_type |> -->
+<!--   group_by(group_type) |> -->
+<!--   summarise(number_of_groups_by_type = n()) |> -->
+<!--   dt_buttons() -->
+<!-- ``` -->
+
+## Countries and repositories
+
+Check the uniqueness of the number of repositories. By far, most repositories are represented once. This does not correct for different ways of specifying a repository. 
 
 ```{r}
-group_by_type <- question_metadata |>
-  select(group, group_type) |>
-  distinct()
+# What is the name of the repository you represent? If you represent multiple repositories, please choose one to focus on in the survey. You may retake the survey to represent another repository.
+qid_repo_name <- "6df8041b"
 
-group_by_type |>
-  group_by(group_type) |>
-  summarise(number_of_groups_by_type = n())
+# In which country is your repository located? If your repository is related to multiple countries, select the country where headquarters are located.
+qid_country <- "a9588678"
+
+repo_names <- select(survey_results, all_of(c(qid_repo_name, qid_country)))
+
+repo_names |>
+  rename("Repository name" = all_of(qid_repo_name),
+         "Country" = all_of(qid_country)) |>
+  group_by(`Repository name`, Country) |>
+  summarise(number = n()) |>
+  ungroup() |>
+  arrange(desc(number)) |>
+  dt_buttons()
 ```
 
-```{r}
+For the countries, Germany is most represented, followed by Serbia. 
 
+```{r}
+plot_mcq(survey_results, question_metadata, qid_country)
 ```
 
-Get an overview of question responses - colored by question type and pillar interest. 
+## Go-on questions
+
+We check the popularity of the 'go-on' questions, i.e. starting with 'These were the core questions on ..'. 
 
 ```{r}
+# extract the question ids for the go-on questions
+goon_qids <- question_metadata |>
+  filter(startsWith(question, "These were the"))|>
+  pull(qid)
+
+# get the qids for go-on questions.
+# also extract shorter names for the questions
+names(goon_qids) <- str_extract(
+  names(goon_qids),
+  "(?<=These were the core questions on ).*?(?=\\.)"
+)
+
+# shorter answers so they show nicely in the plot
+shorter_answers <- survey_results |> select(all_of(unname(goon_qids))) |>
+   mutate(across(everything(), ~ str_extract(., "^[^,]+")))
+
+plot_mcq_table(shorter_answers,
+               question_metadata,
+               goon_qids)
+```
+
+## Response rates
+
+Get an overview of question response rates - colored by question type and pillar interest. 
+
+```{r}
+#| fig-width: 4
+#| fig-height: 8
+
 answers_by_question <- survey_results |>
   summarise(across(everything(), ~ sum(!is.na(.)))) |>
   pivot_longer(everything(),
@@ -113,13 +180,145 @@ answers_by_question |>
   ggplot(aes(y = qid, x = respondents_answered, fill = interest)) +
   geom_bar(stat = "identity") +
   scale_fill_brewer(palette = "Paired") +
-  theme_classic()
+  theme_classic() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
+
+```{r}
+#| fig-width: 4
+#| fig-height: 8
 
 answers_by_question |>
   mutate(qid = factor(qid, levels = rev(qid))) |>
   ggplot(aes(y = qid, x = respondents_answered, fill = question_type)) +
   geom_bar(stat = "identity") +
-  scale_fill_brewer(palette = "Paired") +
-  theme_classic()
+  scale_fill_manual(values = fidelis_colours) +
+  theme_classic() +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
+
+## Respondent clustering
+
+Although the countries and repositories are diverse, there could still be respondents answering questions similarly, i.e. caused by the same person filling out the survey multiple times. These can have a disproportionate effect on the conclusions drawn for the repository. 
+
+To get an idea of response similarity, we estimate the similarity of multiple choice questions. 
+
+```{r}
+
+mc_questions <- filter(question_metadata, question_type == "mcq") |> pull(qid)
+
+# remove country question
+mc_questions <- mc_questions[-which(mc_questions == "a9588678")]
+multiple_choice <- select(survey_results, all_of(mc_questions)) |>
+  mutate(across(everything(), ~as.numeric(as.factor(.x))))
+
+# calculate gower distance
+gower_dist <- daisy(multiple_choice, metric = "gower")
+similarity_matrix <- 1 - as.matrix(gower_dist)  # similarity = 1 - distance
+```
+
+This heatmap represents an all-to-all comparision and clusters respondents by similarity. Here, we can see some signals of a group of responses that are more similar than others. 
+
+```{r}
+#| fig-width: 6
+#| fig-height: 5
+library(ComplexHeatmap)
+Heatmap(
+  col = c("#001B6D", "#FBB03B"),
+  similarity_matrix,
+  cluster_rows = TRUE,        # performs clustering
+  cluster_columns = TRUE,     # performs clustering
+  show_row_dend = FALSE,      # hides row dendrogram
+  show_column_dend = FALSE,   # hides column dendrogram
+  name = "Similarity",
+  show_row_names = FALSE,
+  show_column_names = FALSE
+)
+
+```
+
+```{r}
+# taking a similarity threshold at which edges are drawn
+threshold <- 0.81
+adjacency_matrix <- similarity_matrix
+adjacency_matrix[adjacency_matrix <= threshold] <- 0
+diag(adjacency_matrix) <- 0
+```
+
+In order to find significant clusters of similar responses, we create a network (graph) in which each node is a response, and the edge (line) a similarity greater than `r threshold`. We see that there is a group of reponses from the same country that have quite (or in some cases very) similar reponses to multiple choice questions. 
+
+```{r}
+
+connected <- rowSums(adjacency_matrix) > 0
+adjacency_matrix <- adjacency_matrix[connected, connected]
+
+g <- graph_from_adjacency_matrix(adjacency_matrix, mode = "undirected", weighted = TRUE, diag = FALSE)
+
+qoi <- pull(survey_results[connected, ], "a9588678") |> as.factor() # country
+node_colors <- as.numeric(qoi)
+palette <- levels(qoi) |> length() |> fid_color_func()
+vertex_colors <- palette[node_colors]
+
+edge_widths <- E(g)$weight
+edge_widths <-  (edge_widths - min(edge_widths)) / (max(edge_widths) - min(edge_widths))
+edge_widths <- (edge_widths + 0.1) * 5
+
+```
+
+```{r}
+plot(
+  g,
+  vertex.color = vertex_colors,
+  vertex.label = NA,    
+  vertex.size = 10, # Remove labels for clarity; or set to respondent IDs
+  edge.width = edge_widths,
+  main = "Respondent Similarity Graph Colored by Country"
+)
+# legend("topright", legend = levels(qoi), fill = palette, title = "Country")
+
+```
+
+
+```{r}
+
+# high threshold
+threshold <- 0.9
+
+# Remove edges with weight below threshold
+g2 <- delete_edges(g, E(g)[weight < threshold])
+
+# Find clusters (connected components)
+cl <- components(g2)
+
+# cl$membership gives the cluster assignment for each node
+# cl$csize gives the size of each cluster
+
+# Get list of nodes in each cluster
+cluster_list <- split(V(g2)$name, cl$membership)
+
+# cluster with more than one respondent
+cluster_df <- Filter(function(x) length(x) > 1, cluster_list) |> stack()
+colnames(cluster_df) <- c("response", "cluster")
+```
+
+There are `r length(unique(cluster_df$cluster))` clusters of responses with very similar answers. 
+
+```{r}
+survey_results |>
+  mutate(response = as.character(row_number())) |>
+  right_join(cluster_df) |>
+  select(cluster, response, all_of(c(qid_country, qid_repo_name))) |>
+  rename("Repository name" = all_of(qid_repo_name),
+         "Country" = all_of(qid_country)) |>
+  arrange(desc(cluster)) |>
+  dt_buttons()
 ```
 
