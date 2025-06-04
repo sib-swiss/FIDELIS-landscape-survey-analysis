@@ -23,6 +23,7 @@ library(digest)
 library(cluster)    
 library(ComplexHeatmap)
 library(igraph)
+library(maps)
 
 source("plotting_functions.R")
 ```
@@ -133,6 +134,49 @@ For the countries, Germany is most represented, followed by Serbia.
 ```{r}
 plot_mcq(survey_results, question_metadata, qid_country)
 ```
+
+```{r}
+# Get map data
+world_map <- map_data("world")
+
+# Filter for European countries
+# You need a list of European countries. Here is a simple example:
+european_countries <- c(
+  "Albania", "Andorra", "Austria", "Belarus", "Belgium", "Bosnia and Herzegovina",
+  "Bulgaria", "Croatia", "Czech Republic", "Denmark", "Estonia", "Finland", "France",
+  "Germany", "Greece", "Hungary", "Iceland", "Ireland", "Italy", "Kosovo", "Latvia",
+  "Liechtenstein", "Lithuania", "Luxembourg", "Malta", "Moldova", "Monaco", "Montenegro",
+  "Netherlands", "North Macedonia", "Norway", "Poland", "Portugal", "Romania",
+  "San Marino", "Serbia", "Slovakia", "Slovenia", "Spain", "Sweden", "Switzerland",
+  "Ukraine", "United Kingdom", "Vatican"
+)
+
+country_data <- survey_results |>
+  select(all_of(qid_country)) |>
+    rename("region" = all_of(qid_country)) |>
+  group_by(region) |>
+  summarise(respondents = n())
+
+europe_map <- world_map %>% 
+  filter(region %in% european_countries) |>
+  left_join(country_data) |>
+  mutate(respondents = if_else(is.na(respondents), 0, respondents))
+
+# col_data <- setNames(country_data$color, country_data$region)
+  
+
+# Now, europe_map is tidyverse-friendly and ready to plot:
+p <- ggplot(europe_map, aes(long, lat, group = group, fill = respondents)) + 
+  geom_polygon(color="black") +
+  scale_fill_gradient(low = "white", high = fidelis_colours[1]) +
+  theme_void()
+
+print(p)
+
+ggsave("plots/country_respondents.pdf", width = 7, height = 6)
+  
+```
+
 
 ## Go-on questions
 
