@@ -116,6 +116,7 @@ qid_repo_name <- "6df8041b"
 
 # In which country is your repository located? If your repository is related to multiple countries, select the country where headquarters are located.
 qid_country <- "a9588678"
+qid_country_other <- "7c0d64ce"
 
 repo_names <- select(survey_results, all_of(c(qid_repo_name, qid_country)))
 
@@ -148,12 +149,14 @@ european_countries <- c(
   "Liechtenstein", "Lithuania", "Luxembourg", "Malta", "Moldova", "Monaco", "Montenegro",
   "Netherlands", "North Macedonia", "Norway", "Poland", "Portugal", "Romania",
   "San Marino", "Serbia", "Slovakia", "Slovenia", "Spain", "Sweden", "Switzerland",
-  "Ukraine", "United Kingdom", "Vatican"
+  "Ukraine", "UK", "Vatican"
 )
 
 country_data <- survey_results |>
   select(all_of(qid_country)) |>
     rename("region" = all_of(qid_country)) |>
+  mutate(region = ifelse(region == "United Kingdom", "UK",
+                         ifelse(region == "Republic of Ireland", "Ireland", region))) |>
   group_by(region) |>
   summarise(respondents = n())
 
@@ -174,7 +177,12 @@ p <- ggplot(europe_map, aes(long, lat, group = group, fill = respondents)) +
 print(p)
 
 ggsave("plots/country_respondents.pdf", width = 7, height = 6)
+ggsave("plots/country_respondents.png", width = 7, height = 6)
   
+```
+
+```{r}
+table(pull(survey_results, all_of(qid_country_other)))
 ```
 
 
